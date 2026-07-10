@@ -69,6 +69,7 @@ function loadState() {
 }
 
 function persist() {
+  clearCalcCache();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
@@ -246,7 +247,16 @@ function priorTotal(date, type, key) {
   return item ? item.total : 0;
 }
 
+// (date,type)별 계산 결과 캐시. priorTotal이 전날의 calculatedRows를 재귀로 부르기
+// 때문에 캐시가 없으면 날짜×행 수에 대해 호출이 지수적으로 폭발한다.
+// 상태가 바뀔 수 있는 지점(persist/render/renderSummaryOnly)에서 clearCalcCache로 비운다.
+const calcCache = new Map();
+function clearCalcCache() { calcCache.clear(); }
+
 function calculatedRows(date, type) {
+  const cacheKey = `${date}|${type}`;
+  const cached = calcCache.get(cacheKey);
+  if (cached) return cached;
   const report = state.reports[date];
   const rows = report[type].map((item, sourceIndex) => {
     const key = itemKey(item, type);
@@ -256,7 +266,9 @@ function calculatedRows(date, type) {
     const today = number(item.today);
     return { ...item, key, prev, today, total: prev + today, sourceIndex };
   });
-  return sortRowsForDisplay(rows, type);
+  const result = sortRowsForDisplay(rows, type);
+  calcCache.set(cacheKey, result);
+  return result;
 }
 
 function number(value) {
@@ -330,7 +342,7 @@ function bindEvents() {
   ["projectName", "period", "weather", "tempHigh", "tempLow", "progressRate", "siteMemo", "todayWork", "tomorrowWork"].forEach((id) => {
     $(id).addEventListener("input", () => {
       readForm();
-      renderSummaryOnly();
+      scheduleSummary();
     });
   });
 }
@@ -365,6 +377,7 @@ function readForm() {
 }
 
 function render() {
+  clearCalcCache();
   const report = state.reports[activeDate];
   $("projectName").value = state.projectName;
   $("period").value = state.period;
@@ -385,8 +398,17 @@ function render() {
 }
 
 function renderSummaryOnly() {
+  clearCalcCache();
   $("shareText").value = buildShareText();
   renderPreview();
+}
+
+// 라이브 입력용: 미리보기 갱신은 fitPreviewToOnePage의 강제 리플로우 때문에 무겁다.
+// 키 입력마다 실행하지 않고 잠시 모아서 한 번만 렌더한다.
+let summaryTimer;
+function scheduleSummary() {
+  clearTimeout(summaryTimer);
+  summaryTimer = setTimeout(renderSummaryOnly, 120);
 }
 
 function renderDates() {
@@ -457,7 +479,7 @@ function updateRowField(event) {
     : event.target.value;
   persist();
   refreshRowTotal(event.target);
-  renderSummaryOnly();
+  scheduleSummary();
 }
 
 function handleRowFocusOut(event) {
