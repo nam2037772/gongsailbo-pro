@@ -614,3 +614,13 @@ td input {
   outline: 3px solid rgba(20, 92, 82, 0.28);
   outline-offset: 2px;
 }
+
+#uploadBtn {
+  background-color: #1f7244;
+  color: #fff;
+  border-color: #1f7244;
+}
+#uploadBtn:hover {
+  background-color: #155130;
+  border-color: #155130;
+}
