@@ -967,3 +967,182 @@ function parseExcelData(rows) {
   render();
   toast('공사일보 내용을 미리보기 폼에 불러왔습니다. 확인 후 저장해주세요.');
 }
+
+
+
+async function handleExcelUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  event.target.value = ''; // reset
+
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const firstSheetName = workbook.SheetNames[0];
+      const worksheet = workbook.Sheets[firstSheetName];
+      const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1 });
+      parseExcelData(rows);
+    } catch (err) {
+      console.error(err);
+      toast('엑셀 파싱 중 오류가 발생했습니다.');
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function parseExcelData(rows) {
+  let dateStr = '';
+  let weatherStr = '';
+  let todayWorkStr = '';
+  let tomorrowWorkStr = '';
+  let memoStr = '';
+
+  const labor = [];
+  const equipment = [];
+  const material = [];
+
+  const findValue = (keywords) => {
+    const ignoreList = ['금일작업', '명일작업', '내일작업', '특이사항', '비고', '결재', '업체명', '장비명', '자재명', '일자', '날씨'];
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      if (!row) continue;
+      for (let c = 0; c < row.length; c++) {
+        const cell = String(row[c] || '').replace(/\s+/g, '');
+        if (keywords.some(kw => cell.includes(kw))) {
+          for (let offset = 1; offset <= 3; offset++) {
+             const val = String(row[c + offset] || '').trim();
+             if (val && !ignoreList.some(ig => val.replace(/\s+/g, '').includes(ig))) {
+                 return val;
+             }
+          }
+          const down1 = String(rows[r + 1] ? rows[r + 1][c] : '').trim();
+          if (down1 && !ignoreList.some(ig => down1.replace(/\s+/g, '').includes(ig))) return down1;
+          const down2 = String(rows[r + 1] ? rows[r + 1][c + 1] : '').trim();
+          if (down2 && !ignoreList.some(ig => down2.replace(/\s+/g, '').includes(ig))) return down2;
+          
+          continue;
+        }
+      }
+    }
+    return '';
+  };
+
+  let rawDate = findValue(['일자', '작업일', '공사일자']);
+  if (typeof rawDate === 'number') {
+    const excelEpoch = new Date(1899, 11, 30);
+    const parsedDate = new Date(excelEpoch.getTime() + rawDate * 86400000);
+    const y = parsedDate.getFullYear();
+    const m = String(parsedDate.getMonth() + 1).padStart(2, '0');
+    const d = String(parsedDate.getDate()).padStart(2, '0');
+    dateStr = `${y}-${m}-${d}`;
+  } else if (typeof rawDate === 'string') {
+    const match = rawDate.match(/(\d{4})[-\./년\s]+(\d{1,2})[-\./월\s]+(\d{1,2})/);
+    if (match) {
+      dateStr = `${match[1]}-${match[2].padStart(2, '0')}-${match[3].padStart(2, '0')}`;
+    }
+  }
+  if (!dateStr) dateStr = todayKey();
+
+  weatherStr = String(findValue(['날씨', '기상']));
+  
+  let laborStartRow = -1, laborCol = -1;
+  let equipStartRow = -1, equipCol = -1;
+  let matStartRow = -1, matCol = -1;
+
+  for (let r = 0; r < rows.length; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    for (let c = 0; c < row.length; c++) {
+      const cell = String(row[c] || '').replace(/\s+/g, '');
+      if (laborStartRow === -1 && (cell === '업체명' || cell === '업체')) {
+        laborStartRow = r + 1;
+        laborCol = c;
+      }
+      if (equipStartRow === -1 && cell === '장비명') {
+        equipStartRow = r + 1;
+        equipCol = c;
+      }
+      if (matStartRow === -1 && cell === '자재명') {
+        matStartRow = r + 1;
+        matCol = c;
+      }
+    }
+  }
+
+  if (laborStartRow !== -1) {
+    for (let r = laborStartRow; r < rows.length; r++) {
+      const row = rows[r] || [];
+      const company = String(row[laborCol] || '').trim();
+      if (!company || company.replace(/\s+/g, '') === '합계') break;
+      labor.push({
+        company: company,
+        trade: String(row[laborCol + 1] || ''),
+        prev: Number(row[laborCol + 2]) || 0,
+        today: Number(row[laborCol + 3]) || 0
+      });
+      if (!todayWorkStr && row[laborCol + 5] && String(row[laborCol + 5]).trim()) {
+         todayWorkStr += String(row[laborCol + 5]) + '\n';
+      }
+    }
+    todayWorkStr = todayWorkStr.trim();
+  }
+
+  if (equipStartRow !== -1) {
+    for (let r = equipStartRow; r < rows.length; r++) {
+      const row = rows[r] || [];
+      const name = String(row[equipCol] || '').trim();
+      if (!name || name.replace(/\s+/g, '') === '합계' || name.replace(/\s+/g, '') === '자재명') break;
+      equipment.push({
+        name: name,
+        spec: String(row[equipCol + 1] || ''),
+        prev: Number(row[equipCol + 2]) || 0,
+        today: Number(row[equipCol + 3]) || 0,
+        note: String(row[equipCol + 5] || '')
+      });
+    }
+  }
+
+  if (matStartRow !== -1) {
+    for (let r = matStartRow; r < rows.length; r++) {
+      const row = rows[r] || [];
+      const name = String(row[matCol] || '').trim();
+      if (!name || name.replace(/\s+/g, '') === '합계' || name.replace(/\s+/g, '') === '장비명') break;
+      material.push({
+        name: name,
+        spec: String(row[matCol + 1] || ''),
+        unit: String(row[matCol + 2] || ''),
+        prev: Number(row[matCol + 3]) || 0,
+        today: Number(row[matCol + 4]) || 0
+      });
+    }
+  }
+
+  if (!todayWorkStr) todayWorkStr = String(findValue(['금일작업내용']) || '');
+  if (!tomorrowWorkStr) tomorrowWorkStr = String(findValue(['명일작업내용', '내일작업내용']) || '');
+  memoStr = String(findValue(['특이사항', '비고']) || '');
+
+  if (state.reports[dateStr]) {
+    if (!confirm(`해당 날짜(${dateStr})의 자료가 이미 존재합니다. 불러온 내용으로 덮어쓰시겠습니까?`)) {
+      return;
+    }
+  }
+
+  activeDate = dateStr;
+  state.reports[activeDate] = {
+    ...blankReport(activeDate),
+    weather: weatherStr || '흐림',
+    todayWork: todayWorkStr,
+    tomorrowWork: tomorrowWorkStr,
+    siteMemo: memoStr,
+    labor: labor,
+    equipment: equipment,
+    material: material
+  };
+
+  ensureReport(activeDate);
+  document.getElementById('reportDate').value = activeDate;
+  render();
+  toast('공사일보 내용을 미리보기 폼에 불러왔습니다. 확인 후 저장해주세요.');
+}
